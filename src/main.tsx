@@ -103,7 +103,8 @@ function LoadingArtifact() {
 
 function Boot() {
   return (
-    <PrivyProvider appId='cma4m3v6400dkl10ld7792jm2'>
+    
+    <PrivyProvider appId='cma4m3v6400dkl10ld7792jm2' walletConnectProjectId={undefined}>
       <AuthenticatedApp />
     </PrivyProvider>
   )
