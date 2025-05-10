@@ -1,0 +1,170 @@
+The backend for this project is provided by the @artifact/client npm package, which you will use to surface data and interactivity in the application.
+
+# @artifact/client reference
+
+## 1 — Package map & import cheatsheet
+
+| Purpose                                               | Package to import  | Typical default import                                                                                 |
+| ----------------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------ |
+| Low‑level typed interface (scopes, blobs, branches…)  | `@artifact/api`    | `import * as artifactApi from '@artifact/api'`                                                         |
+| React provider, hooks, syncer, browser client helpers | `@artifact/client` | `import { createWebArtifact, ArtifactBase, ArtifactScope, useString /* … */ } from '@artifact/client'` |
+| Server‑side only helpers (no React environment)       | `@artifact/client` | `import { createArtifact } from '@artifact/client'`                                                    |
+
+---
+
+## 2 — How the Artifact runtime is layered
+
+```
+┌─────────────────────────────┐ UI components / hooks ←— Your front‑end code
+├─────────────────────────────┤ SyncStore (zustand) — keeps a local object graph
+├─────────────────────────────┤ ArtifactContext — exposes {store, artifact}
+├─────────────────────────────┤ Artifact object — ergonomic façade over the RPC
+API ├─────────────────────────────┤ Provider RPC layer — serialises typed
+Actions → HTTP └─────────────────────────────┘ Artifact Core (remote) —
+authoritative repo state & merge
+```
+
+Every call eventually becomes a typed **Action** that is transmitted to the
+server.\
+Local UI code always talks to a **scoped Artifact object**; it never crafts raw
+actions.
+
+---
+
+## 3 — Bootstrapping in the browser
+
+```tsx
+import React from 'react'
+import { createRoot } from 'react-dom/client'
+import {
+  ArtifactBase,
+  ArtifactScope,
+  createWebArtifact,
+  useString,
+} from '@artifact/client'
+
+async function main() {
+  // 1. Resolve a live Artifact instance bound to the caller's “home” repo
+  const artifact = await createWebArtifact(
+    'https://artifact.example.com', // server base URL
+    'did:key:z6Mki…', // caller DID
+    '<token>', // short‑lived JWT or similar
+  )
+
+  // 2. Mount React
+  createRoot(document.getElementById('root')!).render(
+    <ArtifactBase
+      did='did:key:z6Mki…'
+      server='https://artifact.example.com'
+      secureToken='<token>'
+    >
+      {/* optionally narrow the default scope */}
+      <ArtifactScope branch={['main']}>
+        <App />
+      </ArtifactScope>
+    </ArtifactBase>,
+  )
+}
+
+function App() {
+  // live‑updates any time hello.txt changes on the current branch
+  const text = useString('hello.txt')
+  return <pre>{text ?? 'loading…'}</pre>
+}
+
+main()
+```
+
+- **No type‑casting**; the helpers already provide strong types.
+- `ArtifactBase` boots the connection and tears down automatically on unmount.
+- Use `ArtifactScope` anywhere deeper in the tree to adjust
+  `{repo, branch, commit}` without re‑fetching the whole artifact.
+
+---
+
+## 4 — Quick reference: React hooks
+
+All hooks live in `@artifact/client/hooks.ts`:
+
+| Hook                           | Return type                              | Notes                                                 |
+| ------------------------------ | ---------------------------------------- | ----------------------------------------------------- |
+| `useString(path, shardRoot?)`  | `string \| undefined`                    | Decodes UTF‑8 text; shard‑aware                       |
+| `useJson<T>(path, shardRoot?)` | `T \| undefined`                         | Parses JSON into a typed value                        |
+| `useFile(path)`                | `Uint8Array \| undefined`                | Raw blob                                              |
+| `useMeta(path)`                | `Meta \| undefined`                      | Includes `oid`, `mode`, `commit`                      |
+| `useDir(path)`                 | `Meta[] \| undefined`                    | Stable order; shard‑safe                              |
+| `useBlob(oid)`                 | `Uint8Array \| undefined`                | Fetch directly by object id                           |
+| `useObjects()`                 | `Map<Oid, BlobEnvelope \| TreeEnvelope>` | Immutable store of all known objects in the SyncStore |
+
+All subscribe to the zustand **SyncStore** so your component re‑renders only
+when the relevant slice changes.
+
+---
+
+## 5 — Working with the `Artifact` object
+
+### 5.1 Scope navigation
+
+```ts
+// broaden or narrow scope at will
+const repo = artifact.checkout({ repo: myRepo })
+const branch = repo.checkout({ branch: ['main'] })
+const commitA = branch.checkout({ commit: sha1 })
+```
+
+`checkout` **never mutates**; it always returns a new (or memoised) Artifact
+bound to the requested depth.
+
+### 5.2 Reading & writing files
+
+```ts
+artifact.files.write.text('docs/readme.md', markdown)
+artifact.files.isDirty() // → true
+await artifact.branch.write.commit('docs: update README')
+```
+
+### 5.3 Handling many small files with shards
+
+When you anticipate **10 000+** small files, write through `artifact.shards.*`,
+then read them back via `useDir(..., shardRoot)`. This avoids huge directories
+and keeps lookups efficient.
+
+### 5.4 Side‑effectful “fibers”
+
+```ts
+const proc = await artifact.fibers.management.spawn()
+await proc.fibers.actions.dispatch({
+  napp: '@my/tool',
+  tool: 'run',
+  parameters: {},
+})
+```
+
+Fibers are lightweight processes that can keep local JSON state, respond to
+dispatched actions, and be awaited or moved to different branches.
+
+---
+
+## 6 — UI design guidelines
+
+1. **Always** import from `@artifact/client` for front‑end usage.
+2. Wrap the app (or page) with **`<ArtifactBase>`**; use **`<ArtifactScope>`**
+   inside if you need per‑section scoping.
+3. **Read** data exclusively with the React hooks.
+4. **Write** via `artifact.files` / `artifact.shards`, then call `commit`. _Do
+   not_ mutate the SyncStore directly.
+5. **No type casting** in TypeScript; prefer type guards.
+6. Use explicit, comprehensive naming rather than inline comments.
+7. **Tests**: import `expect` from `@std/expect`.
+8. Handle commits in small, atomic blocks — gather writes, then commit once.
+
+---
+
+## 7 — Troubleshooting checklist
+
+| Symptom                                       | Likely cause                                  | Fix                                                                 |
+| --------------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------- |
+| Hook returns `undefined` forever              | Artifact not yet synchronised                 | Wait for a commit to appear; check `useMeta('.')` for `commit` info |
+| Commit rejects “No modified files found”      | Tip isn’t dirty (`files.isDirty() === false`) | Ensure you wrote/removed something before commit                    |
+| UI freeze on huge repos                       | Single‑level directory with many files        | Use `artifact.shards` to break them up                              |
+| “Cannot read property … of undefined” in hook | Missing `<ArtifactBase>` parent               | Wrap relevant subtree with `<ArtifactBase>`                         |
