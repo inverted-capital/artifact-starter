@@ -104,7 +104,7 @@ function LoadingArtifact() {
 function Boot() {
   return (
     
-    <PrivyProvider appId='cma4m3v6400dkl10ld7792jm2' walletConnectProjectId={undefined}>
+    <PrivyProvider appId='cma4m3v6400dkl10ld7792jm2' config={{ externalWallets: { walletConnect: { enabled: false } } }}>
       <AuthenticatedApp />
     </PrivyProvider>
   )
